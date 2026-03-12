@@ -34,15 +34,49 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def find_best_model(agent_name: str, model_dir: str = "results/models") -> str | None:
+    """Find the most recent trained model for an agent type.
+
+    Searches results/models/ for directories matching the agent name
+    and returns the path to the best_model or final_model zip file.
+    """
+    model_path = Path(model_dir)
+    if not model_path.exists():
+        return None
+
+    # Find all directories matching this agent
+    candidates = sorted(
+        [d for d in model_path.iterdir() if d.is_dir() and d.name.startswith(agent_name + "_")],
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+
+    for d in candidates:
+        best = d / "best_model.zip"
+        if best.exists():
+            return str(best.with_suffix(""))  # SB3 load expects path without .zip
+        final = d / "final_model.zip"
+        if final.exists():
+            return str(final.with_suffix(""))
+    return None
+
+
 def get_agent(agent_name: str, env, model_path: str | None = None):
-    """Instantiate an agent by name."""
+    """Instantiate an agent by name.
+
+    If model_path is not provided, auto-discovers the most recent trained
+    model from results/models/.
+    """
     if agent_name == "heuristic":
         return HeuristicBaseline()
     elif agent_name in ("ppo", "dqn"):
-        if model_path:
-            return RLAgent(algorithm=agent_name, model_path=model_path, env=env)
+        # Auto-discover model if not explicitly provided
+        resolved_path = model_path or find_best_model(agent_name)
+        if resolved_path:
+            print(f"  Loading {agent_name} model from: {resolved_path}")
+            return RLAgent(algorithm=agent_name, model_path=resolved_path, env=env)
         else:
-            # Untrained agent for testing
+            print(f"  WARNING: No trained model found for {agent_name}, using untrained agent")
             return RLAgent(algorithm=agent_name, env=env)
     else:
         raise ValueError(f"Unknown agent: {agent_name}")
@@ -126,15 +160,19 @@ def compare_agents(args, config):
 
     results = {}
     for name in agent_names:
+        name = name.strip()
         env = DynamicPricingEnv(config=config, reward_fn=reward_fn)
-        agent = get_agent(name.strip(), env, args.model_path)
+        # Use explicit model_path only if provided, otherwise auto-discover
+        agent = get_agent(name, env, args.model_path)
         metrics = run_evaluation(agent, env, args.episodes)
-        results[name.strip()] = metrics
+        results[name] = metrics
 
-        print(f"--- {name.strip()} ---")
+        print(f"--- {name} ---")
         print(f"  Mean reward:         {metrics['mean_reward']:.4f}")
+        print(f"  Total reward:        {metrics['total_reward']:.2f}")
         print(f"  Mean episode margin: ${metrics['mean_episode_margin']:.2f}")
         print(f"  Action entropy:      {metrics['action_entropy']:.3f}")
+        print(f"  Churn rate (overall):{sum(metrics['churn_rate_by_css'].values()) / max(len(metrics['churn_rate_by_css']), 1):.3f}")
         print(f"  CSS migration:       +{metrics['css_migration']['up']} "
               f"-{metrics['css_migration']['down']} "
               f"={metrics['css_migration']['same']}")
@@ -173,26 +211,105 @@ def run_ab_test(args, config):
 
 
 def generate_report(args, config):
-    """Generate a comprehensive evaluation report."""
+    """Generate a comprehensive evaluation report with markdown and JSON."""
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     reward_fn = CLVOptimizer(config.get("reward", {}).get("clv_optimizer"))
 
-    # Run all agents
-    agents = ["heuristic"]
+    # Run all available agents
+    agent_names = ["heuristic", "ppo", "dqn"]
     results = {}
-    for name in agents:
+    for name in agent_names:
         env = DynamicPricingEnv(config=config, reward_fn=reward_fn)
         agent = get_agent(name, env)
-        results[name] = run_evaluation(agent, env, episodes=50)
+        print(f"Evaluating {name}...")
+        results[name] = run_evaluation(agent, env, episodes=100)
 
-    # Write report
+    # Write JSON report
     report_path = output_dir / f"evaluation_report_{datetime.now():%Y%m%d_%H%M%S}.json"
     with open(report_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
 
-    print(f"Report saved to {report_path}")
+    # Write markdown report
+    md_path = output_dir / "results.md"
+    with open(md_path, "w") as f:
+        f.write("# RL Dynamic Pricing - Evaluation Results\n\n")
+        f.write(f"Generated: {datetime.now():%Y-%m-%d %H:%M:%S}\n\n")
+
+        # Comparison table
+        f.write("## Agent Comparison (100 episodes each)\n\n")
+        f.write("| Metric | " + " | ".join(agent_names) + " |\n")
+        f.write("|--------|" + "|".join(["------" for _ in agent_names]) + "|\n")
+
+        metrics_to_show = [
+            ("Mean Reward", "mean_reward", ".4f"),
+            ("Total Reward", "total_reward", ",.0f"),
+            ("Mean Episode Margin ($)", "mean_episode_margin", ",.2f"),
+            ("Action Entropy", "action_entropy", ".3f"),
+            ("Episodes", "n_episodes", "d"),
+            ("Total Steps", "n_steps", ",d"),
+        ]
+
+        for label, key, fmt in metrics_to_show:
+            values = []
+            for name in agent_names:
+                if name in results and key in results[name]:
+                    val = results[name][key]
+                    if fmt == "d" or fmt == ",d":
+                        values.append(f"{int(val):{fmt}}")
+                    else:
+                        values.append(f"{val:{fmt}}")
+                else:
+                    values.append("N/A")
+            f.write(f"| {label} | " + " | ".join(values) + " |\n")
+
+        # CSS migration
+        f.write("\n## CSS Migration\n\n")
+        f.write("| Agent | Upgrades | Downgrades | Same |\n")
+        f.write("|-------|----------|------------|------|\n")
+        for name in agent_names:
+            if name in results:
+                m = results[name]["css_migration"]
+                f.write(f"| {name} | {m['up']} | {m['down']} | {m['same']} |\n")
+
+        # Churn by CSS
+        f.write("\n## Churn Rate by CSS Tier\n\n")
+        f.write("| CSS Tier | " + " | ".join(agent_names) + " |\n")
+        f.write("|----------|" + "|".join(["------" for _ in agent_names]) + "|\n")
+        for css in range(1, 6):
+            values = []
+            for name in agent_names:
+                if name in results:
+                    rate = results[name]["churn_rate_by_css"].get(str(css), results[name]["churn_rate_by_css"].get(css, 0.0))
+                    values.append(f"{rate:.3f}")
+                else:
+                    values.append("N/A")
+            f.write(f"| CSS {css} | " + " | ".join(values) + " |\n")
+
+        # Recommendations
+        f.write("\n## Recommendations\n\n")
+
+        # Find best agent by mean episode margin
+        best_agent = max(
+            [(name, results[name]["mean_episode_margin"]) for name in agent_names if name in results],
+            key=lambda x: x[1],
+        )
+        heuristic_margin = results.get("heuristic", {}).get("mean_episode_margin", 0)
+        if best_agent[0] != "heuristic" and heuristic_margin > 0:
+            pct_improvement = ((best_agent[1] - heuristic_margin) / abs(heuristic_margin)) * 100
+            f.write(f"- **{best_agent[0].upper()}** achieves the highest mean episode margin "
+                    f"(${best_agent[1]:,.2f}), a {pct_improvement:+.1f}% difference vs heuristic baseline.\n")
+        f.write(f"- Heuristic baseline mean episode margin: ${heuristic_margin:,.2f}\n")
+        for name in ["ppo", "dqn"]:
+            if name in results:
+                ent = results[name]["action_entropy"]
+                if ent < 0.3:
+                    f.write(f"- WARNING: {name.upper()} has low action entropy ({ent:.3f}), "
+                            f"suggesting policy collapse.\n")
+
+    print(f"JSON report saved to {report_path}")
+    print(f"Markdown report saved to {md_path}")
     return results
 
 

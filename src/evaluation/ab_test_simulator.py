@@ -45,22 +45,18 @@ class ABTestSimulator:
 
     def _run_episode(self, agent, env) -> float:
         """Run one episode and return total margin."""
+        from src.agent.heuristic_baseline import HeuristicBaseline
+        from src.agent.rl_agent import RLAgent
+
         obs, _ = env.reset()
         total_margin = 0.0
         done = False
         while not done:
-            # Get action from agent
-            if hasattr(agent, "predict") and hasattr(agent, "allowed_actions"):
-                # Heuristic or similar agent expecting CustomerState
+            if isinstance(agent, HeuristicBaseline):
                 cs = CustomerState.from_observation(obs)
                 action = agent.predict(cs)
-            elif hasattr(agent, "predict"):
-                # Could be heuristic or RL agent
-                try:
-                    cs = CustomerState.from_observation(obs)
-                    action = agent.predict(cs)
-                except TypeError:
-                    action = agent.predict(obs)
+            elif isinstance(agent, RLAgent):
+                action = agent.predict(obs)
             else:
                 action = env.action_space.sample()
 
