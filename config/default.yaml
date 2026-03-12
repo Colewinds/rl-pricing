@@ -1,0 +1,115 @@
+environment:
+  episode_length: 52
+  observation_lag: 2
+  action_space_size: 7
+  actions:
+    0: {name: "hold", pct_change: 0.0}
+    1: {name: "price_up_2pct", pct_change: 0.02}
+    2: {name: "price_up_5pct", pct_change: 0.05}
+    3: {name: "price_down_2pct", pct_change: -0.02}
+    4: {name: "price_down_5pct", pct_change: -0.05}
+    5: {name: "price_down_10pct", pct_change: -0.10}
+    6: {name: "price_down_15pct", pct_change: -0.15}
+  masking:
+    no_consecutive_deep_cuts: true
+    no_updown_oscillation_periods: 2
+  stickiness_threshold_periods: 8
+
+synthetic_data:
+  n_customers: 10000
+  css_distribution:
+    css_1: 0.10
+    css_2: 0.10
+    css_3: 0.40
+    css_4: 0.25
+    css_5: 0.15
+  percentile_benchmarks:
+    cases_p50_monthly: 60
+    sales_p50_monthly: 3000
+    dm_pct_p50: 0.24
+    dm_dollars_p50_monthly: 665
+  elasticity:
+    css_correlation: -0.4
+    by_css:
+      css_1: {mean: -2.5, std: 0.5}
+      css_2: {mean: -2.0, std: 0.4}
+      css_3: {mean: -1.5, std: 0.3}
+      css_4: {mean: -1.0, std: 0.25}
+      css_5: {mean: -0.7, std: 0.2}
+  syw_penetration: 0.30
+  perks_penetration: 0.15
+  syw_css_skew: [0.10, 0.15, 0.30, 0.40, 0.50]
+  concepts:
+    - {name: "qsr", weight: 0.30, elasticity_modifier: 1.2}
+    - {name: "casual_dining", weight: 0.25, elasticity_modifier: 1.0}
+    - {name: "fine_dining", weight: 0.15, elasticity_modifier: 0.7}
+    - {name: "institutional", weight: 0.20, elasticity_modifier: 0.9}
+    - {name: "healthcare", weight: 0.10, elasticity_modifier: 0.8}
+  seasonality:
+    q1_modifier: 0.85
+    q2_modifier: 1.0
+    q3_modifier: 1.05
+    q4_modifier: 1.15
+  annual_churn_baseline: 0.07
+  churn_css_multiplier: {css_1: 2.0, css_2: 1.5, css_3: 1.0, css_4: 0.7, css_5: 0.5}
+
+reward:
+  margin_maximizer: {}
+  clv_optimizer:
+    alpha_by_css: {css_1: 0.3, css_2: 0.35, css_3: 0.5, css_4: 0.6, css_5: 0.7}
+    beta_by_css: {css_1: 0.5, css_2: 0.45, css_3: 0.3, css_4: 0.2, css_5: 0.15}
+    gamma: 10.0
+    delta: 2.0
+    churn_thresholds: {css_1: 0.40, css_2: 0.40, css_3: 0.25, css_4: 0.15, css_5: 0.15}
+    volatility_window: 4
+    volatility_max_changes: 2
+    lifetime_discount_by_css: {css_1: 0.5, css_2: 0.6, css_3: 0.8, css_4: 0.9, css_5: 1.0}
+  portfolio_optimizer:
+    css_migration_bonus: 5.0
+    action_concentration_penalty: 3.0
+
+training:
+  ppo:
+    learning_rate: 0.0003
+    n_steps: 2048
+    batch_size: 64
+    n_epochs: 10
+    gamma: 0.99
+    clip_range: 0.2
+  dqn:
+    learning_rate: 0.0001
+    buffer_size: 100000
+    learning_starts: 1000
+    batch_size: 32
+    gamma: 0.99
+    exploration_fraction: 0.3
+    exploration_final_eps: 0.05
+  timesteps: 500000
+  eval_freq: 10000
+  early_stopping_patience: 50000
+  checkpoint_freq: 50000
+  log_dir: "results/tensorboard"
+  model_dir: "results/models"
+
+multi_agent:
+  portfolio_manager:
+    reallocation_period: 4
+    css_routing:
+      scout: [1, 2]
+      guardian: [4, 5]
+      contested: [3]
+  scout:
+    exploration_bonus: 0.1
+  guardian:
+    restricted_actions: [0, 1, 2, 3]
+
+monitoring:
+  reward_drift_sigma: 2.0
+  action_entropy_min: 0.5
+  alert_consecutive_periods: 3
+
+evaluation:
+  ab_test:
+    split_ratio: 0.5
+    n_simulations: 100
+    confidence_level: 0.95
