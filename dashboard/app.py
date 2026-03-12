@@ -428,13 +428,13 @@ too frequently (more than 2 changes in any 4-week window).
 customer over the full relationship.
         """)
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab6, tab5 = st.tabs([
     "Executive Summary",
     "Agent Decisions",
     "Portfolio Health",
     "A/B Test Results",
-    "About",
     "Methodology",
+    "About",
 ])
 
 
