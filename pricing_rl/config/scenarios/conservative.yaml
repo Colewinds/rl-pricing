@@ -1,0 +1,7 @@
+environment:
+  masking:
+    no_consecutive_deep_cuts: true
+    no_updown_oscillation_periods: 3
+multi_agent:
+  guardian:
+    restricted_actions: [0, 1, 3]

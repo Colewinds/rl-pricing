@@ -1,0 +1,10 @@
+environment:
+  masking:
+    no_consecutive_deep_cuts: false
+    no_updown_oscillation_periods: 0
+training:
+  ppo:
+    clip_range: 0.3
+multi_agent:
+  scout:
+    exploration_bonus: 0.2
