@@ -60,10 +60,11 @@ class MarketSimulator:
         periods_stable: int,
         threshold: float,
     ) -> float:
-        """Compute probability of customer churning.
+        """Compute per-step probability of customer churning.
 
-        Uses a logistic function centered on the margin threshold.
-        SYW membership reduces churn by ~18%. Long stability reduces churn by 30%.
+        Computes an annual churn rate via logistic function, then converts
+        to a per-week probability so that compounding over 52 weeks yields
+        realistic annual churn rates (5-8% baseline, up to ~30% for at-risk).
 
         Args:
             margin_rate: Current margin rate (e.g., 0.24).
@@ -73,21 +74,38 @@ class MarketSimulator:
             threshold: Margin threshold below which churn risk increases.
 
         Returns:
-            Churn probability in [0, 1].
+            Per-step churn probability in [0, 1].
         """
-        # Logistic function centered on threshold
+        # Logistic function gives annual churn rate centered on threshold.
+        # When margin_rate == threshold, annual churn ~= base_annual_rate.
+        # Steepness=8 gives a gradual curve; margins well above threshold -> low churn.
         margin_gap = threshold - margin_rate  # positive when margin below threshold
-        base_prob = 1 / (1 + np.exp(-10 * margin_gap))
+        logistic = 1 / (1 + np.exp(-8 * margin_gap))
 
-        # SYW reduces churn 15-20%
+        # Scale logistic output to realistic annual churn range.
+        # CSS 1-2: baseline ~15% annual, max ~40%.  CSS 4-5: baseline ~3%, max ~20%.
+        annual_baseline = {1: 0.12, 2: 0.10, 3: 0.06, 4: 0.03, 5: 0.02}
+        annual_max = {1: 0.40, 2: 0.35, 3: 0.25, 4: 0.15, 5: 0.10}
+
+        base = annual_baseline.get(css_score, 0.06)
+        cap = annual_max.get(css_score, 0.25)
+        annual_rate = base + (cap - base) * logistic
+
+        # SYW reduces annual churn 15-20%
         if syw:
-            base_prob *= 0.82
+            annual_rate *= 0.82
 
         # Stickiness reduces churn
         if periods_stable >= self.stickiness_threshold:
-            base_prob *= 0.7
+            annual_rate *= 0.7
 
-        return float(np.clip(base_prob, 0.0, 1.0))
+        annual_rate = float(np.clip(annual_rate, 0.0, 0.5))
+
+        # Convert annual rate to per-week probability:
+        # annual = 1 - (1 - weekly)^52  =>  weekly = 1 - (1 - annual)^(1/52)
+        per_week = 1.0 - (1.0 - annual_rate) ** (1.0 / 52.0)
+
+        return float(np.clip(per_week, 0.0, 1.0))
 
     def check_churn(self, churn_probability: float) -> bool:
         """Stochastic churn check based on probability."""

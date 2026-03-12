@@ -148,11 +148,12 @@ class DynamicPricingEnv(gym.Env):
         # Apply price change
         price_change = self.action_map.get(action, 0.0)
 
-        # Compute volume response
+        # Compute volume response (use episode base volume, not current,
+        # to prevent exponential volume compounding from repeated actions)
         delta_vol = self._market_sim.compute_volume_response(
             price_change=price_change,
             elasticity=self._customer.elasticity_estimate,
-            base_volume=self._customer.weekly_cases,
+            base_volume=self._base_volume,
             css_score=self._customer.css_score,
             periods_stable=self._customer.periods_since_last_change,
         )

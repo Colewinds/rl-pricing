@@ -60,7 +60,7 @@ reward:
     beta_by_css: {css_1: 0.5, css_2: 0.45, css_3: 0.3, css_4: 0.2, css_5: 0.15}
     gamma: 10.0
     delta: 2.0
-    churn_thresholds: {css_1: 0.40, css_2: 0.40, css_3: 0.25, css_4: 0.15, css_5: 0.15}
+    churn_thresholds: {css_1: 0.15, css_2: 0.18, css_3: 0.20, css_4: 0.15, css_5: 0.12}
     volatility_window: 4
     volatility_max_changes: 2
     lifetime_discount_by_css: {css_1: 0.5, css_2: 0.6, css_3: 0.8, css_4: 0.9, css_5: 1.0}

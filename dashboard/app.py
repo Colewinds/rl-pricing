@@ -45,11 +45,12 @@ st.markdown("""
 
 report = load_evaluation_report()
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Executive Summary",
     "Agent Decisions",
     "Portfolio Health",
     "A/B Test Results",
+    "About",
 ])
 
 
@@ -514,3 +515,158 @@ with tab4:
         ],
     })
     st.dataframe(rollout, use_container_width=True, hide_index=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# TAB 5: About
+# ═══════════════════════════════════════════════════════════════════════
+with tab5:
+    st.markdown("## About This System")
+
+    # Toggle for technical depth
+    audience = st.radio(
+        "Choose your view:",
+        ["Non-Technical (Business)", "Technical (Engineering)"],
+        horizontal=True,
+    )
+
+    if audience == "Non-Technical (Business)":
+        st.markdown("""
+### What does this system do?
+
+This is an **AI-powered pricing tool** that automatically recommends the best price
+for each customer, every week. Instead of applying the same pricing rules to everyone,
+it learns which customers respond to discounts, which ones are at risk of leaving, and
+which ones are already happy -- and prices accordingly.
+
+### How does it work?
+
+Think of it like a chess AI, but for pricing:
+
+1. **It observes** each customer's purchasing behavior, satisfaction score, price
+   sensitivity, and loyalty program status.
+2. **It considers** 7 possible pricing actions (hold, small/large increases, small/
+   medium/large discounts).
+3. **It picks the action** that maximizes long-term customer value -- not just
+   this week's margin, but the total relationship value over time.
+4. **It learns from outcomes** -- if a price increase causes a customer to buy less,
+   the system remembers and adjusts.
+
+### Why is this better than manual pricing?
+
+| Manual Pricing | AI Pricing |
+|---|---|
+| Same rules for all customers | Personalized per customer |
+| Reacts after customers leave | Predicts churn risk in advance |
+| Monthly review cycles | Weekly optimization |
+| Gut feel on price sensitivity | Data-driven elasticity estimates |
+
+### Key safeguards
+
+- **Human oversight**: All pricing recommendations can be reviewed before deployment.
+- **Guardrails**: Maximum price change limits prevent extreme actions.
+- **Phased rollout**: Start with the safest customer segments, expand gradually.
+- **Monitoring**: Automated alerts if the system behaves unexpectedly.
+
+### The three specialized agents
+
+The system uses a team of three AI agents, each specializing in different customer types:
+
+- **Price Scout** handles at-risk customers (CSS 1-2). It's more exploratory --
+  testing different prices to understand what these customers respond to.
+- **Margin Guardian** handles top-performing customers (CSS 4-5). It's conservative --
+  protecting the profitable relationships that drive the business.
+- **Portfolio Manager** decides which agent handles each customer and reallocates
+  based on performance.
+
+This mirrors how a real pricing team works: different strategies for different
+customer segments, coordinated by a manager.
+        """)
+
+    else:
+        st.markdown("""
+### Architecture Overview
+
+This is a **multi-agent reinforcement learning system** built on Stable-Baselines3
+with a custom orchestration layer. The core loop is a standard Gymnasium environment
+with a 17-dimensional observation space and Discrete(7) action space.
+
+### MDP Formulation
+
+**State space** (17 floats, normalized to [0,1]):
+- Customer attributes: CSS score, performance percentile, potential tier
+- Financial: margin rate, margin dollars, weekly cases, weekly sales
+- Behavioral: deliveries/week, elasticity estimate, price change history (4 slots),
+  periods since last change
+- Flags: SYW member, Perks member, churn probability
+
+**Action space** -- Discrete(7):
+`{Hold, +2%, +5%, -2%, -5%, -10%, -15%}`
+
+Action masking via SB3's `MaskableMultiInputPolicy` prevents consecutive deep cuts
+and price oscillation.
+
+**Transition dynamics:**
+- Volume: `delta_vol = elasticity * price_change * base_vol + N(0, sigma)` where
+  sigma scales inversely with CSS tier
+- Churn: logistic function of margin gap below segment threshold, converted to
+  per-week probability. SYW membership reduces annual churn ~18%; price stability
+  (8+ weeks) reduces ~30%.
+- Episode: 52 steps (1 year weekly), early termination on churn.
+
+### Reward Functions
+
+Three reward classes with increasing sophistication:
+
+1. **Margin Maximizer** (myopic baseline): `R = delta(margin_dollars)`
+2. **CLV Optimizer** (primary): `R = alpha*delta(margin) + beta*delta(volume) - gamma*churn_penalty - delta*volatility_penalty`
+   where alpha/beta weights are CSS-tier-dependent.
+3. **Portfolio Optimizer**: Extends CLV with CSS migration bonus and action
+   concentration penalty.
+
+Each reward class exposes an `.explain()` method returning human-readable
+decomposition for the dashboard.
+
+### Multi-Agent Design
+
+This is a **hierarchical allocation** problem, not simultaneous MARL:
+
+- **Price Scout** (PPO, CSS 1-2): Higher exploration rate, trained with Margin
+  Maximizer reward to encourage price testing.
+- **Margin Guardian** (PPO, CSS 4-5): Restricted action space (no deep discounts),
+  CLV Optimizer with high alpha weight.
+- **Portfolio Manager**: Rule-based allocator with upgrade path to contextual bandit.
+  Routes CSS 3 customers to whichever agent performs better on similar profiles.
+
+Training is phased: independent agent training, then joint fine-tuning with the
+orchestrator in the loop.
+
+### Observation Lag
+
+Configurable data pipeline latency (default: 2 periods). Implemented as a ring buffer
+in the environment. Training with lag=0 vs lag=2 vs lag=4 shows ~19-26% margin
+degradation per 2-week delay -- directly quantifies ROI of real-time data infrastructure.
+
+### Key Design Decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| **Framework** | SB3 + custom orchestration | Cleaner than RLlib for hierarchical allocation |
+| **Environment** | Single-customer Gymnasium | Multi-agent handled by orchestrator, not env |
+| **Reward** | CSS-tier-weighted CLV | Captures Sysco's segment-specific priorities |
+| **Churn model** | Annual rate via logistic, per-week via compounding | Realistic churn rates (3-30% annual by tier) |
+| **Config** | Everything in YAML | Swap in real distributions without code changes |
+
+### Evaluation
+
+- 100 episodes per agent, metrics broken down by CSS tier
+- A/B test simulator with 50/50 split, 100 simulations, 95% CI + p-value
+- Drift detection: reward distribution, action entropy, elasticity accuracy
+- Lag sensitivity analysis across 4 latency configurations
+        """)
+
+    st.markdown("---")
+    st.markdown(
+        "*Built as a prototype for RL-based dynamic pricing in food distribution. "
+        "All data is synthetic with configurable distributions.*"
+    )
