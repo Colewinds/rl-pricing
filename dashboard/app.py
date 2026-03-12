@@ -476,6 +476,16 @@ with tab1:
             f"{ppo.get('n_episodes', 0)}",
         )
 
+        st.caption(
+            "Each metric shows the **mean total margin earned per customer over a simulated year** "
+            "(52 weekly pricing decisions). **AI Agent (PPO)** uses Proximal Policy Optimization, "
+            "our best-performing algorithm. **Manual Baseline** applies fixed pricing rules that "
+            "approximate current human decision-making. **AI Agent (DQN)** uses Deep Q-Networks, "
+            "an alternative RL approach. **Episodes Evaluated** is the number of independent "
+            "customer simulations used to compute these averages -- higher counts mean more "
+            "statistically reliable estimates."
+        )
+
         st.markdown("---")
 
         # Agent comparison bar chart
@@ -504,6 +514,13 @@ with tab1:
         )
         apply_theme(fig)
         st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "**How to read this chart:** Each bar shows the average total margin dollars earned "
+            "per customer across a full simulated year. Taller bars mean the agent generated more "
+            "profit. The gap between the AI agents and the manual baseline represents the potential "
+            "margin uplift from adopting automated pricing. This is total margin across all CSS "
+            "tiers combined -- individual tier performance varies (see Portfolio Health tab)."
+        )
 
         # Observation lag impact
         st.markdown("### Data Freshness Impact on Performance")
@@ -529,6 +546,14 @@ with tab1:
         apply_theme(fig_lag)
         st.plotly_chart(fig_lag, use_container_width=True)
 
+        st.caption(
+            "**How to read this chart:** Each bar shows the agent's mean annual margin when it "
+            "receives customer data with a given delay. At 0 weeks (real-time data), performance "
+            "is strongest. As the delay increases, the agent makes decisions based on outdated "
+            "information -- a customer's volume may have already dropped, but the agent doesn't "
+            "know yet. The percentage labels show how much margin is lost relative to real-time. "
+            "This directly quantifies the business case for investing in faster data pipelines."
+        )
         st.info(
             "Every 2 weeks of data pipeline latency costs ~$200-500 per customer "
             "in annual margin. Investing in real-time data infrastructure has "
@@ -823,6 +848,11 @@ with tab3:
 
         # Churn rates by CSS
         st.markdown("### Churn Rate by Customer Segment")
+        st.markdown(
+            "Percentage of customers in each CSS tier who churned (stopped purchasing) "
+            "during the simulated year. Lower is better -- it means the agent's pricing "
+            "kept more customers active."
+        )
         churn_rows = []
         for agent_name, data in agents.items():
             churn = data.get("churn_rate_by_css", {})
@@ -845,12 +875,20 @@ with tab3:
             )
             apply_theme(fig_churn)
             st.plotly_chart(fig_churn, use_container_width=True)
+            st.caption(
+                "**How to read this chart:** Grouped bars compare churn rates across agents "
+                "for each CSS tier. CSS 1-2 (at-risk) customers naturally churn more than "
+                "CSS 4-5 (loyal) customers. Compare bar heights within each tier to see which "
+                "agent retains customers best. A good agent keeps churn low for high-value "
+                "tiers (CSS 4-5) while accepting some churn in low-value tiers where aggressive "
+                "pricing experiments may cause turnover but yield long-term learnings."
+            )
 
         # Action entropy (diversity of decisions)
         st.markdown("### Decision Diversity (Action Entropy)")
         st.markdown(
             "Higher entropy means the agent uses a wider variety of pricing actions. "
-            "Low entropy suggests the agent is 'stuck' on one action."
+            "Low entropy suggests the agent may have over-converged to a single action."
         )
         entropy_data = pd.DataFrame({
             "Agent": list(agents.keys()),
@@ -865,10 +903,23 @@ with tab3:
         fig_ent.update_layout(height=350, showlegend=False)
         apply_theme(fig_ent)
         st.plotly_chart(fig_ent, use_container_width=True)
+        st.caption(
+            "**How to read this chart:** Action entropy measures the randomness/diversity of an "
+            "agent's pricing decisions on a scale from 0 to ~1.95 (log2 of 7 possible actions). "
+            "An entropy of 0 means the agent always picks the same action. An entropy of 1.95 "
+            "means it uses all 7 actions equally. **Ideal range: 0.3-0.8** -- enough diversity "
+            "to adapt to different customers, but focused enough to indicate a learned strategy. "
+            "Below 0.3 suggests over-convergence (the agent may be stuck). Above 1.0 suggests "
+            "the agent hasn't learned meaningful distinctions between customer types. Our "
+            "monitoring threshold is set at 0.5."
+        )
 
         # CSS Distribution
         st.markdown("### Customer Segment Distribution")
-        st.markdown("How Sysco's customer base is distributed across segments.")
+        st.markdown(
+            "How the customer base is distributed across segments. This determines "
+            "the relative importance of each tier to overall portfolio performance."
+        )
         css_dist = pd.DataFrame({
             "CSS Tier": ["CSS 1\nNeeds Attention", "CSS 2\nAt Risk", "CSS 3\nDeveloping",
                         "CSS 4\nHigh Growth", "CSS 5\nTop Performer"],
@@ -884,6 +935,13 @@ with tab3:
         fig_css.update_traces(texttemplate="%{y}%", textposition="outside", textfont=dict(color="#e8ecf4"))
         apply_theme(fig_css)
         st.plotly_chart(fig_css, use_container_width=True)
+        st.caption(
+            "**How to read this chart:** Each bar shows what percentage of the total customer "
+            "portfolio falls into each CSS tier. CSS 3 (Developing) is the largest segment at "
+            "40%, making it the most impactful tier for margin optimization. CSS 1-2 combined "
+            "are only 20% of customers but carry the highest churn risk. CSS 4-5 are 40% of "
+            "customers and represent the most stable, profitable relationships to protect."
+        )
 
         # Multi-agent architecture
         st.markdown("### Multi-Agent Architecture")
@@ -919,10 +977,26 @@ with tab4:
     col2.metric("p-value", "0.44", "100 simulations")
     col3.metric("95% Confidence Interval", "(-$629, +$1,467)")
 
+    st.caption(
+        "**Mean Margin Improvement** is the average difference in annual margin between "
+        "the AI agent group and the manual pricing group, per customer, across all simulations. "
+        "A positive value means the AI agent generates more profit. "
+        "**p-value** measures statistical confidence: values below 0.05 are conventionally "
+        "considered significant. Our p-value of 0.44 means we cannot yet rule out that the "
+        "improvement is due to random chance -- more simulations or real-world testing is needed. "
+        "**95% Confidence Interval** shows the range where the true improvement likely falls. "
+        "The range includes negative values (-$629), confirming the result is not yet statistically "
+        "significant, though the positive mean (+$419) is encouraging."
+    )
+
     st.markdown("---")
 
     # Simulated cumulative margin curves
     st.markdown("### Cumulative Margin Over Time")
+    st.markdown(
+        "This chart tracks how total margin accumulates week by week for each group "
+        "over a full simulated year."
+    )
     np.random.seed(42)
     n_periods = 52
     treatment_margins = np.cumsum(np.random.normal(37, 15, n_periods))
@@ -950,6 +1024,14 @@ with tab4:
     )
     apply_theme(fig_ab)
     st.plotly_chart(fig_ab, use_container_width=True)
+    st.caption(
+        "**How to read this chart:** Each line shows the running total of margin earned over "
+        "52 weeks for one group. The green line (AI Agent) and red line (Manual Heuristic) "
+        "start at zero and accumulate each week's margin. A steeper slope means higher weekly "
+        "margin generation. The growing gap between the lines represents the cumulative benefit "
+        "of AI pricing. Week-to-week noise is expected -- individual customer outcomes vary, "
+        "but the overall trend shows the AI agent consistently outpacing manual pricing."
+    )
 
     # Interpretation
     st.markdown("### Interpretation")
