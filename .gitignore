@@ -2,4 +2,6 @@
 pricing_rl.egg-info/
 __pycache__/
 *.pyc
-results/
+results/models/
+results/tensorboard/
+results/evaluation_report_*.json
