@@ -1,4 +1,4 @@
-"""Evaluation script for comparing pricing agents.
+"""Evaluation script for comparing pricing agents with item-level metrics.
 
 Usage:
     python scripts/evaluate.py --agents ppo,heuristic --episodes 100
@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import json
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -16,7 +17,8 @@ import yaml
 
 from src.agent.heuristic_baseline import HeuristicBaseline
 from src.agent.rl_agent import RLAgent
-from src.environment.customer import CustomerState
+from src.environment.customer import CustomerState, CustomerItemState
+from src.environment.item import CATEGORIES
 from src.environment.pricing_env import DynamicPricingEnv
 from src.evaluation.ab_test_simulator import ABTestSimulator
 from src.evaluation.metrics import (
@@ -35,16 +37,11 @@ def load_config(config_path: str) -> dict:
 
 
 def find_best_model(agent_name: str, model_dir: str = "results/models") -> str | None:
-    """Find the most recent trained model for an agent type.
-
-    Searches results/models/ for directories matching the agent name
-    and returns the path to the best_model or final_model zip file.
-    """
+    """Find the most recent trained model for an agent type."""
     model_path = Path(model_dir)
     if not model_path.exists():
         return None
 
-    # Find all directories matching this agent
     candidates = sorted(
         [d for d in model_path.iterdir() if d.is_dir() and d.name.startswith(agent_name + "_")],
         key=lambda d: d.stat().st_mtime,
@@ -54,7 +51,7 @@ def find_best_model(agent_name: str, model_dir: str = "results/models") -> str |
     for d in candidates:
         best = d / "best_model.zip"
         if best.exists():
-            return str(best.with_suffix(""))  # SB3 load expects path without .zip
+            return str(best.with_suffix(""))
         final = d / "final_model.zip"
         if final.exists():
             return str(final.with_suffix(""))
@@ -62,15 +59,10 @@ def find_best_model(agent_name: str, model_dir: str = "results/models") -> str |
 
 
 def get_agent(agent_name: str, env, model_path: str | None = None):
-    """Instantiate an agent by name.
-
-    If model_path is not provided, auto-discovers the most recent trained
-    model from results/models/.
-    """
+    """Instantiate an agent by name."""
     if agent_name == "heuristic":
         return HeuristicBaseline()
     elif agent_name in ("ppo", "dqn"):
-        # Auto-discover model if not explicitly provided
         resolved_path = model_path or find_best_model(agent_name)
         if resolved_path:
             print(f"  Loading {agent_name} model from: {resolved_path}")
@@ -82,8 +74,11 @@ def get_agent(agent_name: str, env, model_path: str | None = None):
         raise ValueError(f"Unknown agent: {agent_name}")
 
 
-def run_evaluation(agent, env, episodes: int) -> dict:
-    """Run agent through multiple episodes and collect metrics."""
+def run_evaluation(agent, env, episodes: int, legacy_mode: bool = False) -> dict:
+    """Run agent through multiple episodes and collect metrics.
+
+    Collects both customer-level and item-level metrics.
+    """
     all_rewards = []
     all_actions = []
     all_margins = []
@@ -91,6 +86,11 @@ def run_evaluation(agent, env, episodes: int) -> dict:
     churned = []
     initial_css = []
     final_css = []
+
+    # Item-level metrics
+    category_margins = defaultdict(list)
+    category_actions = defaultdict(list)
+    concept_margins = defaultdict(list)
 
     for ep in range(episodes):
         obs, info = env.reset()
@@ -103,15 +103,24 @@ def run_evaluation(agent, env, episodes: int) -> dict:
 
         done = False
         while not done:
-            # Get action
             if isinstance(agent, HeuristicBaseline):
-                cs = CustomerState.from_observation(obs)
+                if legacy_mode:
+                    cs = CustomerState.from_observation(obs)
+                else:
+                    cs = CustomerItemState.from_observation(obs).to_legacy_customer_state()
                 if ep_initial_css is None:
                     ep_initial_css = cs.css_score
                 action = agent.predict(cs)
             else:
                 if ep_initial_css is None:
-                    cs = CustomerState.from_observation(obs)
+                    if legacy_mode:
+                        cs = CustomerState.from_observation(obs)
+                    else:
+                        cs = CustomerItemState.from_observation(obs)
+                        if hasattr(cs, 'to_legacy_customer_state'):
+                            ep_initial_css = cs.css_score
+                        else:
+                            ep_initial_css = cs.css_score
                     ep_initial_css = cs.css_score
                 action = agent.predict(obs)
 
@@ -120,12 +129,23 @@ def run_evaluation(agent, env, episodes: int) -> dict:
             ep_actions.append(action)
             ep_margin += step_info.get("margin_dollars", 0.0)
 
+            # Collect item-level info
+            item_info = step_info.get("item_state", {})
+            if item_info:
+                cat_id = item_info.get("category", 0)
+                cat_name = CATEGORIES.get(cat_id, "misc")
+                category_margins[cat_name].append(item_info.get("item_margin_rate", 0.0))
+                category_actions[cat_name].append(action)
+
             if terminated:
                 ep_churned = step_info.get("churned", False)
 
             done = terminated or truncated
 
-        cs_final = CustomerState.from_observation(obs)
+        if legacy_mode:
+            cs_final = CustomerState.from_observation(obs)
+        else:
+            cs_final = CustomerItemState.from_observation(obs)
         ep_final_css = cs_final.css_score
 
         all_rewards.extend(ep_rewards)
@@ -139,7 +159,7 @@ def run_evaluation(agent, env, episodes: int) -> dict:
     # Compute metrics
     up, down, same = compute_css_migration(initial_css, final_css)
 
-    return {
+    result = {
         "mean_reward": float(np.mean(all_rewards)),
         "total_reward": float(np.sum(all_rewards)),
         "mean_episode_margin": float(np.mean(all_margins)),
@@ -150,21 +170,38 @@ def run_evaluation(agent, env, episodes: int) -> dict:
         "n_steps": len(all_rewards),
     }
 
+    # Add category-level metrics
+    if category_margins:
+        result["category_metrics"] = {}
+        for cat_name in category_margins:
+            margins = category_margins[cat_name]
+            actions = category_actions[cat_name]
+            result["category_metrics"][cat_name] = {
+                "mean_margin": float(np.mean(margins)) if margins else 0.0,
+                "n_actions": len(actions),
+                "action_entropy": compute_action_entropy(actions) if actions else 0.0,
+                "discount_share": sum(1 for a in actions if a in (3, 4, 5, 6)) / max(len(actions), 1),
+            }
+
+    return result
+
 
 def compare_agents(args, config):
     """Compare multiple agents side by side."""
     agent_names = args.agents.split(",")
-    reward_fn = CLVOptimizer(config.get("reward", {}).get("clv_optimizer"))
+    reward_cfg = config.get("reward", {}).get("clv_optimizer")
+    reward_fn = CLVOptimizer(reward_cfg)
+    legacy_mode = getattr(args, "legacy", False)
 
-    print(f"Evaluating agents: {agent_names} over {args.episodes} episodes each\n")
+    print(f"Evaluating agents: {agent_names} over {args.episodes} episodes each")
+    print(f"Mode: {'legacy 17-dim' if legacy_mode else 'item-level 33-dim'}\n")
 
     results = {}
     for name in agent_names:
         name = name.strip()
-        env = DynamicPricingEnv(config=config, reward_fn=reward_fn)
-        # Use explicit model_path only if provided, otherwise auto-discover
+        env = DynamicPricingEnv(config=config, reward_fn=reward_fn, legacy_mode=legacy_mode)
         agent = get_agent(name, env, args.model_path)
-        metrics = run_evaluation(agent, env, args.episodes)
+        metrics = run_evaluation(agent, env, args.episodes, legacy_mode=legacy_mode)
         results[name] = metrics
 
         print(f"--- {name} ---")
@@ -176,6 +213,14 @@ def compare_agents(args, config):
         print(f"  CSS migration:       +{metrics['css_migration']['up']} "
               f"-{metrics['css_migration']['down']} "
               f"={metrics['css_migration']['same']}")
+
+        # Print category metrics if available
+        if "category_metrics" in metrics:
+            print("  Category metrics:")
+            for cat, cm in sorted(metrics["category_metrics"].items()):
+                print(f"    {cat}: margin={cm['mean_margin']:.1%}, "
+                      f"discount_share={cm['discount_share']:.1%}, "
+                      f"actions={cm['n_actions']}")
         print()
 
     return results
@@ -183,8 +228,9 @@ def compare_agents(args, config):
 
 def run_ab_test(args, config):
     """Run A/B test between treatment and control agents."""
+    legacy_mode = getattr(args, "legacy", False)
     reward_fn = CLVOptimizer(config.get("reward", {}).get("clv_optimizer"))
-    env = DynamicPricingEnv(config=config, reward_fn=reward_fn)
+    env = DynamicPricingEnv(config=config, reward_fn=reward_fn, legacy_mode=legacy_mode)
 
     treatment = get_agent(args.treatment, env)
     control = get_agent(args.control, env)
@@ -214,17 +260,17 @@ def generate_report(args, config):
     """Generate a comprehensive evaluation report with markdown and JSON."""
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+    legacy_mode = getattr(args, "legacy", False)
 
     reward_fn = CLVOptimizer(config.get("reward", {}).get("clv_optimizer"))
 
-    # Run all available agents
     agent_names = ["heuristic", "ppo", "dqn"]
     results = {}
     for name in agent_names:
-        env = DynamicPricingEnv(config=config, reward_fn=reward_fn)
+        env = DynamicPricingEnv(config=config, reward_fn=reward_fn, legacy_mode=legacy_mode)
         agent = get_agent(name, env)
         print(f"Evaluating {name}...")
-        results[name] = run_evaluation(agent, env, episodes=100)
+        results[name] = run_evaluation(agent, env, episodes=100, legacy_mode=legacy_mode)
 
     # Write JSON report
     report_path = output_dir / f"evaluation_report_{datetime.now():%Y%m%d_%H%M%S}.json"
@@ -237,7 +283,6 @@ def generate_report(args, config):
         f.write("# RL Dynamic Pricing - Evaluation Results\n\n")
         f.write(f"Generated: {datetime.now():%Y-%m-%d %H:%M:%S}\n\n")
 
-        # Comparison table
         f.write("## Agent Comparison (100 episodes each)\n\n")
         f.write("| Metric | " + " | ".join(agent_names) + " |\n")
         f.write("|--------|" + "|".join(["------" for _ in agent_names]) + "|\n")
@@ -264,7 +309,6 @@ def generate_report(args, config):
                     values.append("N/A")
             f.write(f"| {label} | " + " | ".join(values) + " |\n")
 
-        # CSS migration
         f.write("\n## CSS Migration\n\n")
         f.write("| Agent | Upgrades | Downgrades | Same |\n")
         f.write("|-------|----------|------------|------|\n")
@@ -273,7 +317,6 @@ def generate_report(args, config):
                 m = results[name]["css_migration"]
                 f.write(f"| {name} | {m['up']} | {m['down']} | {m['same']} |\n")
 
-        # Churn by CSS
         f.write("\n## Churn Rate by CSS Tier\n\n")
         f.write("| CSS Tier | " + " | ".join(agent_names) + " |\n")
         f.write("|----------|" + "|".join(["------" for _ in agent_names]) + "|\n")
@@ -287,10 +330,18 @@ def generate_report(args, config):
                     values.append("N/A")
             f.write(f"| CSS {css} | " + " | ".join(values) + " |\n")
 
-        # Recommendations
-        f.write("\n## Recommendations\n\n")
+        # Category metrics
+        f.write("\n## Category-Level Metrics\n\n")
+        for name in agent_names:
+            if name in results and "category_metrics" in results[name]:
+                f.write(f"\n### {name}\n\n")
+                f.write("| Category | Mean Margin | Discount Share | Actions | Entropy |\n")
+                f.write("|----------|------------|----------------|---------|--------|\n")
+                for cat, cm in sorted(results[name]["category_metrics"].items()):
+                    f.write(f"| {cat} | {cm['mean_margin']:.1%} | {cm['discount_share']:.1%} "
+                            f"| {cm['n_actions']} | {cm['action_entropy']:.3f} |\n")
 
-        # Find best agent by mean episode margin
+        f.write("\n## Recommendations\n\n")
         best_agent = max(
             [(name, results[name]["mean_episode_margin"]) for name in agent_names if name in results],
             key=lambda x: x[1],
@@ -301,12 +352,6 @@ def generate_report(args, config):
             f.write(f"- **{best_agent[0].upper()}** achieves the highest mean episode margin "
                     f"(${best_agent[1]:,.2f}), a {pct_improvement:+.1f}% difference vs heuristic baseline.\n")
         f.write(f"- Heuristic baseline mean episode margin: ${heuristic_margin:,.2f}\n")
-        for name in ["ppo", "dqn"]:
-            if name in results:
-                ent = results[name]["action_entropy"]
-                if ent < 0.3:
-                    f.write(f"- WARNING: {name.upper()} has low action entropy ({ent:.3f}), "
-                            f"suggesting policy collapse.\n")
 
     print(f"JSON report saved to {report_path}")
     print(f"Markdown report saved to {md_path}")
@@ -325,6 +370,7 @@ def main():
     parser.add_argument("--generate-report", action="store_true")
     parser.add_argument("--output", type=str, default="results/")
     parser.add_argument("--config", default="config/default.yaml")
+    parser.add_argument("--legacy", action="store_true", help="Use legacy 17-dim mode")
     args = parser.parse_args()
 
     config = load_config(args.config)

@@ -2,6 +2,8 @@
 
 import numpy as np
 
+from src.environment.item import CATEGORIES
+
 
 class MarketSimulator:
     """Simulates market dynamics for pricing decisions.
@@ -10,6 +12,11 @@ class MarketSimulator:
     - Volume response: elasticity-based with stickiness dampening
     - Churn probability: logistic function of margin gap with SYW discount
     - Seasonality: quarterly modifiers on base values
+
+    Extended for item-level:
+    - Item elasticity: modified by category, concept, substitutability, perishability
+    - Cross-item effects: price changes on high-share items affect related categories
+    - Seasonal elasticity: perishable seasonal items become inelastic in peak season
     """
 
     def __init__(self, seed: int = 42, config: dict | None = None):
@@ -24,6 +31,8 @@ class MarketSimulator:
         base_volume: float,
         css_score: int,
         periods_stable: int = 0,
+        seasonal_index: float = 1.0,
+        perishability: float = 0.5,
     ) -> float:
         """Compute the volume change from a price action.
 
@@ -33,6 +42,8 @@ class MarketSimulator:
             base_volume: Current volume level.
             css_score: Customer satisfaction score 1-5.
             periods_stable: Number of periods since last price change.
+            seasonal_index: How seasonal this item is (0-2).
+            perishability: How perishable the item is (0-1).
 
         Returns:
             Delta volume (positive means volume increase).
@@ -46,11 +57,85 @@ class MarketSimulator:
             damping = 0.5 + 0.5 * (self.stickiness_threshold / periods_stable)
             response *= damping
 
+        # Perishability effect: highly perishable items have stronger response
+        # (customers can't stockpile, so volume shifts more with price)
+        if perishability > 0.7:
+            response *= 1.0 + 0.3 * (perishability - 0.7) / 0.3
+
         # Noise: scaled by CSS tier (higher CSS = less noise)
         noise_scale = 0.1 * base_volume * (6 - css_score) / 5
         noise = self.rng.normal(0, noise_scale)
 
         return response + noise
+
+    def compute_item_elasticity(
+        self,
+        base_elasticity: float,
+        category: int,
+        concept: int,
+        substitutability: float,
+        perishability: float,
+        config: dict | None = None,
+    ) -> float:
+        """Compute item-specific elasticity from customer base elasticity.
+
+        Modifies base elasticity by category properties and concept affinity.
+
+        Args:
+            base_elasticity: Customer's base elasticity (negative).
+            category: Category ID (0-7).
+            concept: Concept ID (0-4).
+            substitutability: Item substitutability (0-1).
+            perishability: Item perishability (0-1).
+            config: Items config with category elasticity modifiers.
+
+        Returns:
+            Item-specific elasticity (negative).
+        """
+        config = config or {}
+        categories = config.get("categories", {})
+        cat_name = CATEGORIES.get(category, "misc")
+        cat_cfg = categories.get(cat_name, {})
+        cat_modifier = cat_cfg.get("elasticity_modifier", 1.0)
+
+        # High substitutability -> more elastic (customers switch easily)
+        sub_modifier = 0.8 + 0.4 * substitutability  # 0.8 to 1.2
+
+        # Perishability slightly increases elasticity (must buy somewhere)
+        perish_modifier = 1.0 - 0.15 * perishability  # 1.0 to 0.85 (less elastic)
+
+        item_elasticity = base_elasticity * cat_modifier * sub_modifier * perish_modifier
+        return float(np.clip(item_elasticity, -5.0, -0.1))
+
+    def compute_cross_item_effect(
+        self,
+        price_change: float,
+        item_share_of_wallet: float,
+        category: int,
+        config: dict | None = None,
+    ) -> float:
+        """Compute cross-item effect of a price change.
+
+        Large price changes on high-share items can affect overall customer
+        behavior. Returns a multiplier on the customer-level churn impact.
+
+        Args:
+            price_change: Fractional price change applied.
+            item_share_of_wallet: This item's share of customer's total revenue.
+            category: Category ID.
+            config: Cross-sell affinities config.
+
+        Returns:
+            Cross-item effect multiplier (1.0 = neutral, >1 = amplified).
+        """
+        # Only significant items create cross-effects
+        if abs(item_share_of_wallet) < 0.03:
+            return 1.0
+
+        # Larger share + larger change = bigger effect
+        effect = 1.0 + abs(price_change) * item_share_of_wallet * 2.0
+
+        return float(np.clip(effect, 1.0, 1.5))
 
     def compute_churn_probability(
         self,
@@ -130,3 +215,43 @@ class MarketSimulator:
             config.get("q4_modifier", 1.15),
         ]
         return base_value * modifiers[min(quarter, 3)]
+
+    def apply_seasonal_elasticity(
+        self,
+        elasticity: float,
+        seasonal_index: float,
+        period: int,
+        config: dict,
+    ) -> float:
+        """Modulate elasticity based on seasonality.
+
+        Perishable seasonal items become less elastic in peak season
+        (customers must buy regardless of price) and more elastic off-season.
+
+        Args:
+            elasticity: Base elasticity (negative).
+            seasonal_index: How seasonal this item is (0-2).
+            period: Current period (0-51).
+            config: Seasonality config.
+
+        Returns:
+            Seasonally adjusted elasticity (negative).
+        """
+        quarter = period // 13
+        modifiers = [
+            config.get("q1_modifier", 0.85),
+            config.get("q2_modifier", 1.0),
+            config.get("q3_modifier", 1.05),
+            config.get("q4_modifier", 1.15),
+        ]
+        seasonal_mod = modifiers[min(quarter, 3)]
+
+        # In peak season (mod > 1), reduce elasticity for seasonal items
+        # In off season (mod < 1), increase elasticity
+        if seasonal_mod > 1.0:
+            dampening = 1.0 - seasonal_index * (seasonal_mod - 1.0) * 0.5
+        else:
+            dampening = 1.0 + seasonal_index * (1.0 - seasonal_mod) * 0.3
+
+        dampening = max(0.5, min(dampening, 1.5))
+        return float(elasticity * dampening)

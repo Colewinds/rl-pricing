@@ -123,7 +123,7 @@ class DriftDetector:
         Returns:
             Dict with alert flags for each monitoring dimension.
         """
-        return {
+        alerts = {
             "reward_drift": self._reward_breach_count >= self.alert_consecutive,
             "action_entropy_collapse": self._entropy_breach_count >= self.alert_consecutive,
             "elasticity_divergence": self._elasticity_breach_count >= self.alert_consecutive,
@@ -131,6 +131,12 @@ class DriftDetector:
             "entropy_breach_periods": self._entropy_breach_count,
             "elasticity_breach_periods": self._elasticity_breach_count,
         }
+        alerts["any_alert"] = (
+            alerts["reward_drift"]
+            or alerts["action_entropy_collapse"]
+            or alerts["elasticity_divergence"]
+        )
+        return alerts
 
     def generate_report(self) -> dict:
         """Generate a full monitoring report.

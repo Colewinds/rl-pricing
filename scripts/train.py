@@ -5,6 +5,7 @@ Usage:
     python scripts/train.py --agent dqn --reward clv_optimizer --timesteps 500000
     python scripts/train.py --agent heuristic --reward clv_optimizer --timesteps 52000
     python scripts/train.py --agent multi --reward portfolio_optimizer --timesteps 500000
+    python scripts/train.py --agent ppo --reward clv_optimizer --legacy  # 17-dim mode
 """
 
 import argparse
@@ -50,57 +51,93 @@ def _deep_merge(base: dict, overrides: dict):
             base[k] = v
 
 
+def train_agent(
+    algorithm: str,
+    config: dict,
+    reward_fn,
+    timesteps: int,
+    model_dir: str,
+    legacy_mode: bool = False,
+) -> RLAgent:
+    """Train an RL agent and save to model_dir. Importable for use in pipeline.
+
+    Args:
+        algorithm: "ppo" or "dqn".
+        config: Full config dict.
+        reward_fn: Reward function instance.
+        timesteps: Training timesteps.
+        model_dir: Directory to save the model.
+        legacy_mode: If True, use 17-dim customer-level env.
+
+    Returns:
+        Trained RLAgent.
+    """
+    model_dir_path = Path(model_dir)
+    model_dir_path.mkdir(parents=True, exist_ok=True)
+
+    env = Monitor(DynamicPricingEnv(config=config, reward_fn=reward_fn, legacy_mode=legacy_mode))
+    eval_env = Monitor(DynamicPricingEnv(config=config, reward_fn=reward_fn, legacy_mode=legacy_mode))
+
+    algo_config = config.get("training", {}).get(algorithm, {})
+    agent = RLAgent(
+        algorithm=algorithm,
+        env=env,
+        config={"training": {algorithm: algo_config}},
+    )
+
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path=str(model_dir_path),
+        log_path=str(model_dir_path),
+        eval_freq=config["training"].get("eval_freq", 10000),
+        deterministic=True,
+        render=False,
+    )
+
+    agent.train(total_timesteps=timesteps, callback=eval_callback)
+    agent.save(str(model_dir_path / "final_model"))
+    return agent
+
+
 def train_single_agent(args, config):
     """Train a single RL agent or run heuristic baseline."""
     run_id = f"{args.agent}_{args.reward}_{datetime.now():%Y%m%d_%H%M%S}"
     log_dir = Path(config["training"]["log_dir"]) / run_id
     model_dir = Path(config["training"]["model_dir"]) / run_id
     log_dir.mkdir(parents=True, exist_ok=True)
-    model_dir.mkdir(parents=True, exist_ok=True)
 
     reward_cfg = config.get("reward", {}).get(args.reward, {})
     reward_fn = REWARD_FUNCTIONS[args.reward](reward_cfg)
 
-    env = Monitor(DynamicPricingEnv(config=config, reward_fn=reward_fn))
-    eval_env = Monitor(DynamicPricingEnv(config=config, reward_fn=reward_fn))
+    legacy_mode = getattr(args, "legacy", False)
 
     if args.agent == "heuristic":
+        env = Monitor(DynamicPricingEnv(config=config, reward_fn=reward_fn, legacy_mode=legacy_mode))
         agent = HeuristicBaseline(config.get("multi_agent", {}).get("heuristic"))
         print(f"Running heuristic baseline for {args.timesteps} steps...")
-        obs, _ = eval_env.reset()
+        obs, _ = env.reset()
         total_reward = 0.0
         for step in range(args.timesteps):
             cs = CustomerState.from_observation(obs)
             action = agent.predict(cs)
-            obs, reward, terminated, truncated, info = eval_env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
             if terminated or truncated:
-                obs, _ = eval_env.reset()
+                obs, _ = env.reset()
         print(f"Heuristic total reward: {total_reward:.2f}")
         return
 
-    algo_config = config.get("training", {}).get(args.agent, {})
-    agent = RLAgent(
-        algorithm=args.agent,
-        env=env,
-        config={"training": {args.agent: algo_config}},
-    )
-
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=str(model_dir),
-        log_path=str(log_dir),
-        eval_freq=config["training"]["eval_freq"],
-        deterministic=True,
-        render=False,
-    )
-
     print(f"Training {args.agent} with {args.reward} for {args.timesteps} timesteps...")
-    agent.train(
-        total_timesteps=args.timesteps,
-        callback=eval_callback,
+    mode_str = "legacy 17-dim" if legacy_mode else "item-level 33-dim"
+    print(f"  Mode: {mode_str}")
+    agent = train_agent(
+        algorithm=args.agent,
+        config=config,
+        reward_fn=reward_fn,
+        timesteps=args.timesteps,
+        model_dir=str(model_dir),
+        legacy_mode=legacy_mode,
     )
-    agent.save(str(model_dir / "final_model"))
     print(f"Model saved to {model_dir / 'final_model'}")
 
 
@@ -119,6 +156,7 @@ def main():
     parser.add_argument("--timesteps", type=int, default=500000)
     parser.add_argument("--config", default="config/default.yaml")
     parser.add_argument("--scenario", default=None)
+    parser.add_argument("--legacy", action="store_true", help="Use legacy 17-dim customer-level env")
     args = parser.parse_args()
 
     config = load_config(args.config, args.scenario)

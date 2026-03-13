@@ -1,9 +1,11 @@
-"""Config-driven synthetic data generator for customer populations and transactions."""
+"""Config-driven synthetic data generator for customer populations, items, and transactions."""
 
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+
+from src.environment.item import CATEGORIES, CATEGORY_IDS, CONCEPT_IDS
 
 
 def _load_config(config_path: str | None = None) -> dict:
@@ -133,6 +135,205 @@ def generate_customer_population(
     })
 
     return df
+
+
+def generate_item_catalog(
+    seed: int = 42,
+    config_path: str | None = None,
+) -> pd.DataFrame:
+    """Generate a master item catalog with category, cost, and item properties.
+
+    Args:
+        seed: Random seed for reproducibility.
+        config_path: Path to YAML config.
+
+    Returns:
+        DataFrame with one row per item (n_catalog_items rows).
+    """
+    config = _load_config(config_path)
+    items_cfg = config["items"]
+    n_items = items_cfg["n_catalog_items"]
+    rng = np.random.default_rng(seed)
+
+    categories_cfg = items_cfg["categories"]
+    cat_names = list(categories_cfg.keys())
+    cat_weights = [categories_cfg[c]["weight"] for c in cat_names]
+
+    # Assign items to categories proportionally
+    cat_assignments = rng.choice(cat_names, size=n_items, p=cat_weights)
+
+    records = []
+    subcat_counters = {c: 0 for c in cat_names}
+    for i in range(n_items):
+        cat_name = cat_assignments[i]
+        cat_cfg = categories_cfg[cat_name]
+        cat_id = cat_cfg["id"]
+
+        # Subcategory: cycle through available subcategories
+        subcats = cat_cfg.get("subcategories", ["default"])
+        subcat_idx = subcat_counters[cat_name] % len(subcats)
+        subcat_counters[cat_name] += 1
+
+        # Unit cost: lognormal, category-dependent
+        base_cost = rng.lognormal(np.log(8.0), 0.6)
+        if cat_name == "protein":
+            base_cost *= 1.5
+        elif cat_name == "produce":
+            base_cost *= 0.8
+        elif cat_name == "beverages":
+            base_cost *= 0.6
+
+        unit_cost = max(0.50, float(base_cost))
+
+        # Margin rate
+        margin_mean = cat_cfg["margin_rate"]["mean"]
+        margin_std = cat_cfg["margin_rate"]["std"]
+        item_margin = float(np.clip(rng.normal(margin_mean, margin_std), 0.03, 0.50))
+        unit_price = unit_cost / (1 - item_margin)
+
+        # Perishability
+        perish_mean = cat_cfg["perishability"]["mean"]
+        perish_std = cat_cfg["perishability"]["std"]
+        perishability = float(np.clip(rng.normal(perish_mean, perish_std), 0.0, 1.0))
+
+        # Substitutability
+        sub_mean = cat_cfg["substitutability"]["mean"]
+        sub_std = cat_cfg["substitutability"]["std"]
+        substitutability = float(np.clip(rng.normal(sub_mean, sub_std), 0.0, 1.0))
+
+        # Competitive index: random, slight correlation with substitutability
+        competitive_index = float(np.clip(
+            0.5 + 0.3 * (substitutability - 0.5) + rng.normal(0, 0.15), 0.0, 1.0
+        ))
+
+        # Seasonal index: produce and protein more seasonal
+        seasonal_base = 1.0
+        if cat_name in ("produce", "protein", "bakery"):
+            seasonal_base = 1.3
+        elif cat_name in ("frozen", "paper", "misc"):
+            seasonal_base = 0.7
+        seasonal_index = float(np.clip(rng.normal(seasonal_base, 0.3), 0.0, 2.0))
+
+        records.append({
+            "item_id": f"SKU{i:05d}",
+            "category": cat_name,
+            "category_id": cat_id,
+            "subcategory": subcats[subcat_idx],
+            "subcategory_id": subcat_idx,
+            "unit_cost": round(unit_cost, 2),
+            "unit_price": round(unit_price, 2),
+            "item_margin_rate": round(item_margin, 4),
+            "perishability": round(perishability, 3),
+            "substitutability": round(substitutability, 3),
+            "competitive_index": round(competitive_index, 3),
+            "seasonal_index": round(seasonal_index, 3),
+        })
+
+    return pd.DataFrame(records)
+
+
+def generate_customer_items(
+    customers_df: pd.DataFrame,
+    catalog_df: pd.DataFrame,
+    seed: int = 42,
+    config_path: str | None = None,
+) -> pd.DataFrame:
+    """Assign items to customers and generate per-customer-item metrics.
+
+    Items are assigned based on concept-category affinity. Each customer gets
+    a subset of the catalog, with volume and revenue proportional to their
+    overall spending level.
+
+    Args:
+        customers_df: Customer population from generate_customer_population.
+        catalog_df: Item catalog from generate_item_catalog.
+        seed: Random seed.
+        config_path: Path to config YAML.
+
+    Returns:
+        DataFrame with one row per customer-item pair.
+    """
+    config = _load_config(config_path)
+    items_cfg = config["items"]
+    rng = np.random.default_rng(seed)
+
+    ipc = items_cfg["items_per_customer"]
+    min_items = ipc["min"]
+    max_items = ipc["max"]
+    css_scale = ipc["css_scale"]
+    affinity = items_cfg["concept_category_affinity"]
+    loss_leader_pct = items_cfg.get("loss_leader_pct", 0.05)
+
+    records = []
+    for _, cust in customers_df.iterrows():
+        concept = cust["concept"]
+        css = cust["css_score"]
+        scale = css_scale.get(f"css_{css}", 1.0)
+
+        # Number of items for this customer
+        n_items = int(np.clip(
+            rng.normal((min_items + max_items) / 2 * scale, (max_items - min_items) / 6),
+            min_items, max_items,
+        ))
+        n_items = min(n_items, len(catalog_df))
+
+        # Build item selection probabilities based on concept-category affinity
+        concept_aff = affinity.get(concept, {})
+        item_probs = np.array([
+            concept_aff.get(row["category"], 1.0)
+            for _, row in catalog_df.iterrows()
+        ])
+        item_probs /= item_probs.sum()
+
+        # Select items without replacement
+        selected_indices = rng.choice(
+            len(catalog_df), size=n_items, replace=False, p=item_probs
+        )
+        selected_items = catalog_df.iloc[selected_indices]
+
+        # Distribute customer's weekly revenue across items
+        weekly_sales = cust["sales_monthly"] / 4.33
+        weekly_cases = cust["cases_monthly"] / 4.33
+
+        # Generate Dirichlet-distributed revenue shares
+        alpha_vec = np.ones(n_items) * 0.5  # sparse distribution
+        revenue_shares = rng.dirichlet(alpha_vec)
+
+        for idx, (_, item_row) in enumerate(selected_items.iterrows()):
+            item_revenue = weekly_sales * revenue_shares[idx]
+            item_units = max(0.1, item_revenue / max(item_row["unit_price"], 0.01))
+
+            # Item-specific margin: base from catalog + noise
+            item_margin = float(np.clip(
+                item_row["item_margin_rate"] + rng.normal(0, 0.02),
+                0.03, 0.50,
+            ))
+
+            is_ll = bool(rng.random() < loss_leader_pct)
+
+            records.append({
+                "customer_id": cust["customer_id"],
+                "item_id": item_row["item_id"],
+                "category": item_row["category"],
+                "category_id": item_row["category_id"],
+                "subcategory": item_row["subcategory"],
+                "subcategory_id": item_row["subcategory_id"],
+                "concept": concept,
+                "css_score": css,
+                "unit_cost": item_row["unit_cost"],
+                "unit_price": item_row["unit_price"],
+                "item_margin_rate": round(item_margin, 4),
+                "weekly_units": round(float(item_units), 2),
+                "weekly_revenue": round(float(item_revenue), 2),
+                "revenue_share": round(float(revenue_shares[idx]), 4),
+                "perishability": item_row["perishability"],
+                "substitutability": item_row["substitutability"],
+                "competitive_index": item_row["competitive_index"],
+                "seasonal_index": item_row["seasonal_index"],
+                "is_loss_leader": is_ll,
+            })
+
+    return pd.DataFrame(records)
 
 
 def generate_transaction_history(
