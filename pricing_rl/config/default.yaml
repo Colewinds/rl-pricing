@@ -53,6 +53,125 @@ synthetic_data:
   annual_churn_baseline: 0.07
   churn_css_multiplier: {css_1: 2.0, css_2: 1.5, css_3: 1.0, css_4: 0.7, css_5: 0.5}
 
+items:
+  n_catalog_items: 500
+  items_per_customer:
+    min: 10
+    max: 200
+    css_scale: {css_1: 0.3, css_2: 0.5, css_3: 1.0, css_4: 1.5, css_5: 2.0}
+  categories:
+    protein:
+      id: 0
+      weight: 0.20
+      elasticity_modifier: 1.3
+      perishability: {mean: 0.8, std: 0.1}
+      substitutability: {mean: 0.6, std: 0.15}
+      margin_rate: {mean: 0.22, std: 0.05}
+      subcategories: ["poultry", "beef", "pork", "seafood", "specialty"]
+    produce:
+      id: 1
+      weight: 0.15
+      elasticity_modifier: 1.2
+      perishability: {mean: 0.9, std: 0.05}
+      substitutability: {mean: 0.7, std: 0.1}
+      margin_rate: {mean: 0.18, std: 0.04}
+      subcategories: ["fresh_vegetables", "fresh_fruit", "herbs", "prepared"]
+    paper:
+      id: 2
+      weight: 0.12
+      elasticity_modifier: 0.7
+      perishability: {mean: 0.05, std: 0.02}
+      substitutability: {mean: 0.8, std: 0.1}
+      margin_rate: {mean: 0.28, std: 0.06}
+      subcategories: ["napkins", "containers", "bags", "cleaning"]
+    dairy:
+      id: 3
+      weight: 0.13
+      elasticity_modifier: 1.1
+      perishability: {mean: 0.7, std: 0.1}
+      substitutability: {mean: 0.5, std: 0.15}
+      margin_rate: {mean: 0.20, std: 0.04}
+      subcategories: ["milk", "cheese", "butter", "cream", "yogurt"]
+    beverages:
+      id: 4
+      weight: 0.12
+      elasticity_modifier: 0.8
+      perishability: {mean: 0.1, std: 0.05}
+      substitutability: {mean: 0.7, std: 0.1}
+      margin_rate: {mean: 0.25, std: 0.05}
+      subcategories: ["soft_drinks", "juice", "water", "coffee_tea", "alcohol"]
+    frozen:
+      id: 5
+      weight: 0.13
+      elasticity_modifier: 0.9
+      perishability: {mean: 0.2, std: 0.05}
+      substitutability: {mean: 0.6, std: 0.15}
+      margin_rate: {mean: 0.23, std: 0.05}
+      subcategories: ["frozen_protein", "frozen_vegetables", "frozen_desserts", "ice_cream"]
+    bakery:
+      id: 6
+      weight: 0.08
+      elasticity_modifier: 1.0
+      perishability: {mean: 0.85, std: 0.08}
+      substitutability: {mean: 0.5, std: 0.15}
+      margin_rate: {mean: 0.26, std: 0.05}
+      subcategories: ["bread", "pastries", "tortillas", "rolls"]
+    misc:
+      id: 7
+      weight: 0.07
+      elasticity_modifier: 0.9
+      perishability: {mean: 0.1, std: 0.05}
+      substitutability: {mean: 0.6, std: 0.2}
+      margin_rate: {mean: 0.24, std: 0.06}
+      subcategories: ["condiments", "oils", "spices", "canned"]
+  concept_category_affinity:
+    qsr:
+      protein: 1.0
+      produce: 0.6
+      paper: 1.3
+      dairy: 0.8
+      beverages: 1.4
+      frozen: 1.5
+      bakery: 1.2
+      misc: 0.8
+    casual_dining:
+      protein: 1.2
+      produce: 1.1
+      paper: 1.0
+      dairy: 1.0
+      beverages: 1.1
+      frozen: 0.8
+      bakery: 1.0
+      misc: 1.0
+    fine_dining:
+      protein: 1.5
+      produce: 1.4
+      paper: 0.6
+      dairy: 1.3
+      beverages: 1.2
+      frozen: 0.4
+      bakery: 1.1
+      misc: 1.2
+    institutional:
+      protein: 1.0
+      produce: 0.9
+      paper: 1.2
+      dairy: 1.0
+      beverages: 1.0
+      frozen: 1.2
+      bakery: 0.8
+      misc: 1.1
+    healthcare:
+      protein: 1.1
+      produce: 1.3
+      paper: 1.1
+      dairy: 1.2
+      beverages: 0.9
+      frozen: 1.0
+      bakery: 0.7
+      misc: 1.0
+  loss_leader_pct: 0.05
+
 reward:
   margin_maximizer: {}
   clv_optimizer:
@@ -60,13 +179,43 @@ reward:
     beta_by_css: {css_1: 0.5, css_2: 0.45, css_3: 0.3, css_4: 0.2, css_5: 0.15}
     gamma: 10.0
     delta: 2.0
-    churn_thresholds: {css_1: 0.40, css_2: 0.40, css_3: 0.25, css_4: 0.15, css_5: 0.15}
+    epsilon: 3.0
+    zeta: 15.0
+    eta: 1.0
+    theta: 5.0
+    churn_thresholds: {css_1: 0.15, css_2: 0.18, css_3: 0.20, css_4: 0.15, css_5: 0.12}
     volatility_window: 4
     volatility_max_changes: 2
     lifetime_discount_by_css: {css_1: 0.5, css_2: 0.6, css_3: 0.8, css_4: 0.9, css_5: 1.0}
+    alpha_concept_modifier: {qsr: 0.8, casual_dining: 1.0, fine_dining: 1.3, institutional: 0.9, healthcare: 1.1}
+    beta_concept_modifier: {qsr: 1.3, casual_dining: 1.0, fine_dining: 0.6, institutional: 1.1, healthcare: 0.8}
+    cross_sell_affinities:
+      protein: {paper: 0.15, beverages: 0.10}
+      produce: {dairy: 0.08}
+      bakery: {dairy: 0.12, beverages: 0.06}
+      frozen: {paper: 0.05}
   portfolio_optimizer:
     css_migration_bonus: 5.0
     action_concentration_penalty: 3.0
+
+business_rules:
+  category_margin_floors:
+    protein: 0.12
+    produce: 0.08
+    paper: 0.18
+    dairy: 0.10
+    beverages: 0.15
+    frozen: 0.12
+    bakery: 0.14
+    misc: 0.14
+  customer_margin_floor: 0.15
+  customer_margin_floor_by_css: {css_1: 0.12, css_2: 0.12, css_3: 0.15, css_4: 0.18, css_5: 0.20}
+  max_consecutive_discounts: 3
+  max_category_discount_share: 0.20
+  margin_velocity_max_decline: -0.05
+  holiday_periods: [13, 47, 48, 51]
+  holiday_margin_floor_boost: 0.03
+  delivery_delay_reward_discount: 0.3
 
 training:
   ppo:
@@ -113,3 +262,21 @@ evaluation:
     split_ratio: 0.5
     n_simulations: 100
     confidence_level: 0.95
+
+continuous_loop:
+  retrain_interval: 4
+  retrain_timesteps: 200000
+  eval_episodes_per_period: 50
+  ab_test_simulations: 100
+  promotion_p_threshold: 0.05
+  warm_start: true
+
+llm:
+  provider: "anthropic"
+  model: "claude-sonnet-4-20250514"
+  temperature: 0.3
+  auto_approve_low_risk: false
+  guardrails:
+    max_weight_change_pct: 0.30
+    always_require_approval: ["reward_weight", "action_mask"]
+    never_allow: ["disable_monitoring", "remove_churn_penalty"]
